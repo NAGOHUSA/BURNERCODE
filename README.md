@@ -154,7 +154,7 @@ struct SMSMessage: Identifiable, Hashable {
 
 @MainActor
 final class SMSDashboardViewModel: ObservableObject {
-    private let mockReservedNumberPrefix = "555 010 42" // Placeholder mock format.
+    private let mockReservedNumberPrefix = "555-010-42" // Placeholder mock format.
     private var listenerTask: Task<Void, Never>?
 
     @Published var countries: [Country] = [
@@ -180,7 +180,7 @@ final class SMSDashboardViewModel: ObservableObject {
             reservedNumber = "\(selectedCountry.dialingCode) \(mockReservedNumberPrefix)\(Int.random(in: 10...99))"
             errorText = nil
         } catch {
-            errorText = (error as? LocalizedError)?.errorDescription ?? "Unable to reserve number. Check credits/network and retry."
+            errorText = (error as? LocalizedError)?.errorDescription ?? "Unable to reserve number. Check credit balance, connectivity, and provider availability."
         }
     }
 
@@ -188,12 +188,16 @@ final class SMSDashboardViewModel: ObservableObject {
         // Replace with Supabase/Firebase realtime subscription.
         listenerTask?.cancel()
         listenerTask = Task {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            latestMessage = SMSMessage(
-                from: "+1 202 555 0147",
-                body: "Your verification code is 483921",
-                receivedAt: Date()
-            )
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+                latestMessage = SMSMessage(
+                    from: "+1 202 555 0147",
+                    body: "Your verification code is 483921",
+                    receivedAt: Date()
+                )
+            } catch {
+                errorText = "Realtime listener interrupted. Reconnecting may be required."
+            }
         }
     }
 
