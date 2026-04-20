@@ -55,6 +55,10 @@
 // pseudo/boilerplate
 import { createClient } from "@supabase/supabase-js";
 
+/**
+ * Validates Twilio webhook authenticity by recomputing the expected HMAC-SHA1 signature
+ * from the public webhook URL + sorted form fields and comparing it to X-Twilio-Signature.
+ */
 async function verifyTwilioSignature(req: Request, form: FormData, authToken: string, publicWebhookUrl: string) {
   const signature = req.headers.get("X-Twilio-Signature") ?? "";
   if (!signature) return false;
@@ -97,12 +101,13 @@ Deno.serve(async (req) => {
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-  await supabase.from("sms_messages").insert({
-    to_number: to,
-    from_number: from,
-    body,
-    received_at: new Date().toISOString(),
-  });
+  const { error } = await supabase.from("sms_messages").insert({
+      to_number: to,
+      from_number: from,
+      body,
+      received_at: new Date().toISOString(),
+    });
+  if (error) return new Response("failed to persist inbound SMS", { status: 500 });
 
   return new Response("ok", { status: 200 });
 });
@@ -149,6 +154,9 @@ struct SMSMessage: Identifiable, Hashable {
 
 @MainActor
 final class SMSDashboardViewModel: ObservableObject {
+    private let mockReservedNumberPrefix = "555 010 42" // Placeholder mock format.
+    private var listenerTask: Task<Void, Never>?
+
     @Published var countries: [Country] = [
         .init(isoCode: "US", name: "United States", dialingCode: "+1"),
         .init(isoCode: "GB", name: "United Kingdom", dialingCode: "+44"),
@@ -169,7 +177,7 @@ final class SMSDashboardViewModel: ObservableObject {
         do {
             // Replace with API call to your serverless function.
             try await Task.sleep(nanoseconds: 300_000_000)
-            reservedNumber = "\(selectedCountry.dialingCode) 555 010 42\(Int.random(in: 10...99))"
+            reservedNumber = "\(selectedCountry.dialingCode) \(mockReservedNumberPrefix)\(Int.random(in: 10...99))"
             errorText = nil
         } catch {
             errorText = (error as? LocalizedError)?.errorDescription ?? "Unable to reserve number. Check credits/network and retry."
@@ -178,7 +186,8 @@ final class SMSDashboardViewModel: ObservableObject {
 
     func startRealtimeListener() {
         // Replace with Supabase/Firebase realtime subscription.
-        Task {
+        listenerTask?.cancel()
+        listenerTask = Task {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             latestMessage = SMSMessage(
                 from: "+1 202 555 0147",
@@ -186,6 +195,10 @@ final class SMSDashboardViewModel: ObservableObject {
                 receivedAt: Date()
             )
         }
+    }
+
+    deinit {
+        listenerTask?.cancel()
     }
 }
 
