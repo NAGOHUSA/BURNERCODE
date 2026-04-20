@@ -55,18 +55,47 @@
 // pseudo/boilerplate
 import { createClient } from "@supabase/supabase-js";
 
-Deno.serve(async (req) => {
+async function verifyTwilioSignature(req: Request, form: FormData, authToken: string, publicWebhookUrl: string) {
   const signature = req.headers.get("X-Twilio-Signature") ?? "";
-  const form = await req.formData();
+  if (!signature) return false;
 
-  // TODO: verify signature with your Twilio auth token
-  if (!signature) return new Response("invalid signature", { status: 401 });
+  // Twilio signature base string: full webhook URL + concatenated sorted form fields.
+  const pairs = [...form.entries()]
+    .map(([k, v]) => [String(k), String(v)] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const payload = publicWebhookUrl + pairs.map(([k, v]) => `${k}${v}`).join("");
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  const expected = btoa(String.fromCharCode(...new Uint8Array(mac)));
+  return signature === expected;
+}
+
+Deno.serve(async (req) => {
+  const form = await req.formData();
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const twilioAuthToken = Deno.env.get("TWILIO_AUTH_TOKEN");
+  const publicWebhookUrl = Deno.env.get("PUBLIC_WEBHOOK_URL");
+
+  if (!supabaseUrl || !serviceRoleKey || !twilioAuthToken || !publicWebhookUrl) {
+    return new Response("Missing required environment configuration", { status: 500 });
+  }
+
+  const isValid = await verifyTwilioSignature(req, form, twilioAuthToken, publicWebhookUrl);
+  if (!isValid) return new Response("invalid signature", { status: 401 });
 
   const to = String(form.get("To") ?? "");
   const from = String(form.get("From") ?? "");
   const body = String(form.get("Body") ?? "");
 
-  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  const supabase = createClient(supabaseUrl, serviceRoleKey);
 
   await supabase.from("sms_messages").insert({
     to_number: to,
@@ -108,6 +137,7 @@ struct Country: Identifiable, Hashable {
     let id = UUID()
     let isoCode: String
     let name: String
+    let dialingCode: String
 }
 
 struct SMSMessage: Identifiable, Hashable {
@@ -120,10 +150,10 @@ struct SMSMessage: Identifiable, Hashable {
 @MainActor
 final class SMSDashboardViewModel: ObservableObject {
     @Published var countries: [Country] = [
-        .init(isoCode: "US", name: "United States"),
-        .init(isoCode: "GB", name: "United Kingdom"),
-        .init(isoCode: "CA", name: "Canada"),
-        .init(isoCode: "DE", name: "Germany")
+        .init(isoCode: "US", name: "United States", dialingCode: "+1"),
+        .init(isoCode: "GB", name: "United Kingdom", dialingCode: "+44"),
+        .init(isoCode: "CA", name: "Canada", dialingCode: "+1"),
+        .init(isoCode: "DE", name: "Germany", dialingCode: "+49")
     ]
     @Published var selectedCountry: Country?
     @Published var reservedNumber: String?
@@ -139,10 +169,10 @@ final class SMSDashboardViewModel: ObservableObject {
         do {
             // Replace with API call to your serverless function.
             try await Task.sleep(nanoseconds: 300_000_000)
-            reservedNumber = "+1 555 010 42\(selectedCountry.isoCode.suffix(1))"
+            reservedNumber = "\(selectedCountry.dialingCode) 555 010 42\(Int.random(in: 10...99))"
             errorText = nil
         } catch {
-            errorText = "Failed to reserve number. Try again."
+            errorText = (error as? LocalizedError)?.errorDescription ?? "Unable to reserve number. Check credits/network and retry."
         }
     }
 
